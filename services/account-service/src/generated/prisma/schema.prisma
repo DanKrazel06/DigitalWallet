@@ -1,0 +1,52 @@
+// account-service — Prisma schema.
+// Owns ONLY the account profile data. The user authentication data lives
+// in auth-service and is never read directly from here.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+  output          = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Account — profile row owned by account-service.
+//
+// `userId` is the link to the auth-service `users.id`. It is a UNIQUE field
+// because one auth user has exactly one account profile (1-to-1 relation
+// across services). We do NOT enforce a foreign key — that table lives in
+// another service / another database; the relation is event-driven.
+// ---------------------------------------------------------------------------
+model Account {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @unique @map("user_id") @db.Uuid
+  email     String
+  firstName String?  @map("first_name")
+  lastName  String?  @map("last_name")
+  // KYC ("Know Your Customer") status. Defaults to pending; will move to
+  // verified once the user completes the KYC flow (out of scope here).
+  kycStatus String   @default("pending") @map("kyc_status")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("accounts")
+}
+
+// Same Transactional Outbox pattern as auth-service. Each business write
+// that should produce a Kafka event must also append a row here in the
+// SAME transaction, so we never publish without persisting (and vice-versa).
+model OutboxEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  aggregateId String    @map("aggregate_id")
+  topic       String
+  payload     Json
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(6)
+
+  @@index([publishedAt, createdAt], name: "outbox_pending_idx")
+  @@map("outbox_events")
+}

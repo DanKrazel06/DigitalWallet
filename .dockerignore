@@ -1,0 +1,34 @@
+# Sent to the Docker daemon for EVERY build. Keep it tight.
+# Same spirit as .gitignore but evaluated by the docker CLI before the build.
+
+**/node_modules
+**/dist
+**/build
+**/.next
+**/.turbo
+**/.cache
+**/coverage
+
+# Local secrets and env files — must NEVER end up in an image layer.
+**/.env
+**/.env.*
+!**/.env.example
+
+# IDE / OS noise
+.idea
+.vscode
+.DS_Store
+*.log
+.pnpm-store
+
+# Git internals — not needed by the runtime
+.git
+.gitignore
+.github
+
+# Test artefacts
+**/__snapshots__
+**/*.test.*
+
+# Generated Prisma client gets rebuilt inside the image
+**/src/generated

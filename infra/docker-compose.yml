@@ -1,0 +1,179 @@
+name: walletdigital
+
+# Stack d'infrastructure locale pour le développement.
+# Lancement depuis la racine du projet :
+#   pnpm infra:up
+# Les valeurs sensibles viennent du .env racine (jamais commité).
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — source de vérité transactionnelle (1 cluster, 4 bases)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    container_name: wd-postgres
+    restart: unless-stopped
+    # Force md5 password encoding for new ALTER USER / CREATE USER calls.
+    # Works around a known SCRAM auth issue with Docker Desktop on Windows
+    # when clients connect from the host via the published port.
+    command:
+      - postgres
+      - -c
+      - password_encryption=md5
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST_AUTH_METHOD: md5
+      # Administrative DB created by default; per-service databases are
+      # created at boot by infra/postgres/init/01-create-databases.sh
+      POSTGRES_DB: postgres
+      POSTGRES_DB_AUTH: ${POSTGRES_DB_AUTH}
+      POSTGRES_DB_ACCOUNT: ${POSTGRES_DB_ACCOUNT}
+      POSTGRES_DB_WALLET: ${POSTGRES_DB_WALLET}
+      POSTGRES_DB_TRANSACTION: ${POSTGRES_DB_TRANSACTION}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./postgres/config/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - walletdigital
+
+  # ---------------------------------------------------------------------------
+  # MongoDB — notifications, logs métier
+  # ---------------------------------------------------------------------------
+  mongo:
+    image: mongo:7
+    container_name: wd-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DB_NOTIFICATION}
+    ports:
+      - "${MONGO_PORT}:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - walletdigital
+
+  # ---------------------------------------------------------------------------
+  # Redis — cache, sessions, rate-limit, clés d'idempotence
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: wd-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - walletdigital
+
+  # ---------------------------------------------------------------------------
+  # Redpanda — bus d'événements compatible Kafka API
+  # Kafka API : localhost:9092  •  Admin API : localhost:9644
+  # Mono-binaire C++ : pas de ZooKeeper, pas de JVM, ~200Mo RAM
+  # ---------------------------------------------------------------------------
+  redpanda:
+    image: redpandadata/redpanda:v24.3.1
+    container_name: wd-redpanda
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9093,external://0.0.0.0:9092
+      # Adresses annoncées aux clients :
+      #  - "internal" pour les autres conteneurs (réseau walletdigital)
+      #  - "external" pour les apps tournant sur l'hôte (localhost)
+      - --advertise-kafka-addr internal://redpanda:9093,external://localhost:9092
+      - --pandaproxy-addr internal://0.0.0.0:8083,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8083,external://localhost:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --smp 1
+      - --memory 512M
+      - --mode dev-container
+      - --default-log-level=warn
+    ports:
+      - "${KAFKA_PORT}:9092"   # Kafka API (clients applicatifs)
+      - "18081:18081"          # Schema Registry
+      - "18082:18082"          # Pandaproxy (REST -> Kafka)
+      - "9644:9644"            # Admin API
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - walletdigital
+
+  # ---------------------------------------------------------------------------
+  # Redpanda Console — UI web pour explorer topics, messages, consumer groups
+  # ---------------------------------------------------------------------------
+  redpanda-console:
+    image: redpandadata/console:v2.7.2
+    container_name: wd-redpanda-console
+    restart: unless-stopped
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+      KAFKA_SCHEMAREGISTRY_ENABLED: "true"
+      KAFKA_SCHEMAREGISTRY_URLS: http://redpanda:8081
+    ports:
+      - "${KAFKA_CONSOLE_PORT}:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    networks:
+      - walletdigital
+
+  # ---------------------------------------------------------------------------
+  # Mailhog — capture des emails envoyés en dev (jamais routés vers l'extérieur)
+  # SMTP : port 1025  •  UI : http://localhost:8025
+  # ---------------------------------------------------------------------------
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: wd-mailhog
+    restart: unless-stopped
+    ports:
+      - "${MAILHOG_SMTP_PORT}:1025"
+      - "${MAILHOG_UI_PORT}:8025"
+    networks:
+      - walletdigital
+
+volumes:
+  postgres_data:
+  mongo_data:
+  redis_data:
+  redpanda_data:
+
+networks:
+  walletdigital:
+    name: walletdigital
+    driver: bridge

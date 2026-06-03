@@ -1,0 +1,52 @@
+// wallet-service — Prisma schema.
+// Owns wallet records: currency, balance, freeze status.
+// `userId` and `accountId` are foreign references to other services'
+// data, NOT enforced by SQL FK (database-per-service principle).
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+  output          = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Wallet — money container for one (userId, currency) pair.
+//
+// CRITICAL: `balance` is stored as BigInt representing MINOR UNITS of the
+// currency (cents for EUR/USD/GBP). Floating-point types are FORBIDDEN
+// for money — `0.1 + 0.2 !== 0.3` in IEEE 754.
+//
+// Unique (userId, currency): a user has at most one wallet per currency.
+// Different users can have wallets in the same currency, hence the
+// composite uniqueness rather than a unique on userId alone.
+// ---------------------------------------------------------------------------
+model Wallet {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  accountId String   @map("account_id") @db.Uuid
+  currency  String   @db.VarChar(3)
+  balance   BigInt   @default(0)
+  status    String   @default("active") // active | frozen | closed
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([userId, currency], name: "wallets_user_currency_unique")
+  @@map("wallets")
+}
+
+model OutboxEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  aggregateId String    @map("aggregate_id")
+  topic       String
+  payload     Json
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(6)
+
+  @@index([publishedAt, createdAt], name: "outbox_pending_idx")
+  @@map("outbox_events")
+}

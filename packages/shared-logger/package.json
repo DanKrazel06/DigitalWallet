@@ -1,0 +1,27 @@
+{
+  "name": "@walletdigital/logger",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings=0",
+    "test": "echo \"no tests yet\" && exit 0"
+  },
+  "dependencies": {
+    "pino": "^9.5.0",
+    "pino-pretty": "^13.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}
