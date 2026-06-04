@@ -9,10 +9,13 @@ import { loadConfig } from './config.js'
 import { createPrismaClient } from './infrastructure/prisma-client.js'
 import { PrismaWalletRepository } from './infrastructure/prisma-wallet.repository.js'
 import { PrismaUnitOfWork } from './infrastructure/prisma-unit-of-work.js'
-import { createAccountEventConsumer } from './infrastructure/account-event.consumer.js'
+import { createMerchantEventConsumer } from './infrastructure/merchant-event.consumer.js'
+import { createTransactionEventConsumer } from './infrastructure/transaction-event.consumer.js'
 
 import { WalletService } from './application/wallet.service.js'
-import { CreateWalletFromAccountUseCase } from './application/create-wallet.use-case.js'
+import { CreateWalletForMerchantUseCase } from './application/create-wallet.use-case.js'
+import { UpdateWalletStatusUseCase } from './application/update-wallet-status.use-case.js'
+import { ApplyTransactionToWalletsUseCase } from './application/apply-transaction.use-case.js'
 
 import { registerRoutes } from './interfaces/http/routes.js'
 import { errorHandler } from './interfaces/http/error-handler.js'
@@ -36,7 +39,9 @@ async function bootstrap(): Promise<void> {
 
   // 4. Application layer
   const walletService = new WalletService(walletsRepo)
-  const createWalletUseCase = new CreateWalletFromAccountUseCase(walletsRepo, unitOfWork)
+  const createWalletUseCase = new CreateWalletForMerchantUseCase(walletsRepo, unitOfWork)
+  const updateWalletStatusUseCase = new UpdateWalletStatusUseCase(walletsRepo, unitOfWork)
+  const applyTransactionUseCase = new ApplyTransactionToWalletsUseCase(walletsRepo)
 
   // 5. HTTP server
   const app = Fastify({
@@ -57,29 +62,44 @@ async function bootstrap(): Promise<void> {
   app.setSerializerCompiler(serializerCompiler)
   app.setErrorHandler(errorHandler)
   app.get('/health', async () => ({ status: 'ok', service: 'wallet-service' }))
-  await registerRoutes(app, { walletService })
+  await registerRoutes(app, { walletService, updateWalletStatusUseCase })
 
-  // 6. Kafka — publisher (for wallet.created from create-wallet)
-  //         + consumer (subscribes to walletdigital.account)
+  // 6. Kafka — publisher (for wallet.* events emitted by use-cases)
+  //         + consumer (subscribes to walletdigital.merchant)
   const eventPublisher = await createEventPublisher({ kafka, logger })
   const outboxRelay = createOutboxRelay({ prisma, publisher: eventPublisher, logger })
   outboxRelay.start()
 
-  const accountConsumer = await createAccountEventConsumer({
+  const merchantConsumer = await createMerchantEventConsumer({
     kafka,
     logger,
-    groupId: config.KAFKA_CONSUMER_GROUP,
+    groupId: `${config.KAFKA_CONSUMER_GROUP}-merchant`,
     createWallet: createWalletUseCase,
     defaultCurrency: config.DEFAULT_CURRENCY,
   })
-  await accountConsumer.run()
+  await merchantConsumer.run()
 
-  // 7. Graceful shutdown
+  // Consume transaction events so the displayed balances in this service
+  // mirror the source-of-truth balances held by transaction-service.
+  // Separate consumer group from `-merchant` so partition assignment is
+  // independent and one stuck handler can't block the other topic.
+  const transactionConsumer = await createTransactionEventConsumer({
+    kafka,
+    logger,
+    groupId: `${config.KAFKA_CONSUMER_GROUP}-transaction`,
+    applyTransaction: applyTransactionUseCase,
+  })
+  await transactionConsumer.run()
+
+  // 7. Graceful shutdown — order matters: stop accepting new HTTP
+  //    requests, drain in-flight work, then stop the consumer, then
+  //    the relay, then the publisher, then the DB.
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'shutting down')
     try {
       await app.close()
-      await accountConsumer.disconnect()
+      await merchantConsumer.disconnect()
+      await transactionConsumer.disconnect()
       await outboxRelay.stop()
       await eventPublisher.disconnect()
       await prisma.$disconnect()

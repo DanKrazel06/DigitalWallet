@@ -1,15 +1,16 @@
 import type { Currency } from '../domain/money.js'
 
-export interface CreateWalletFromAccountInput {
-  userId: string
-  accountId: string
+// Input coming from a `merchant.created` Kafka event consumed off the
+// `walletdigital.merchant` topic. The use-case ignores the merchant.type
+// (employee/company) — the wallet just attaches to the merchant id.
+export interface CreateWalletForMerchantInput {
+  merchantId: string
   currency: Currency
 }
 
-export interface CreateWalletFromAccountOutput {
+export interface CreateWalletForMerchantOutput {
   walletId: string
-  userId: string
-  accountId: string
+  merchantId: string
   currency: Currency
   balance: string
   createdAt: string

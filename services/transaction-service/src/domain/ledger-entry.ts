@@ -1,27 +1,26 @@
 import type { Money } from './money.js'
+import type { TransactionType } from './transaction.js'
 
 // LedgerEntry — single immutable accounting movement on one wallet.
 //
-// Comes in two flavours, produced by the matching factories:
-//   - debit(...)  — wallet's balance went DOWN
-//   - credit(...) — wallet's balance went UP
+// `type` mirrors the parent transaction (charge or refund). Reports can
+// filter by movement kind without joining `transactions`.
 //
-// Each completed Transaction generates EXACTLY two ledger entries:
+// Each completed Transaction generates EXACTLY TWO ledger entries:
 // one debit on the source wallet and one credit on the destination
-// wallet. The pair has the same `transactionId`, so the auditor can
-// always reconstruct what happened together.
+// wallet, sharing the same `transactionId`.
 //
 // `balanceAfter` is the wallet's running balance AFTER this entry was
-// applied. It lets us reconstruct any historical balance without
-// replaying every entry from the beginning.
+// applied. Lets us reconstruct historical balances without replaying
+// every entry from the beginning.
 //
 // IMMUTABLE: ledger entries are never updated or deleted. Mistakes are
-// fixed by adding COMPENSATING entries (a debit followed later by a
-// credit of the same amount, for instance). This is what makes the
-// ledger auditable and compliant with financial regulations.
+// fixed by adding COMPENSATING entries (debit followed by an offsetting
+// credit at a later date). This is what makes the ledger auditable.
 export interface LedgerEntryProps {
   id: string
   transactionId: string
+  type: TransactionType
   walletId: string
   debit: Money
   credit: Money
@@ -32,10 +31,8 @@ export interface LedgerEntryProps {
 export class LedgerEntry {
   private constructor(private readonly props: LedgerEntryProps) {}
 
-  // Factory for the "money went out of this wallet" half of a transfer.
-  // `debit` is the amount removed; `credit` is forced to zero so the
-  // direction is unambiguous.
-  static debit(input: {
+  // Charge: source wallet debited.
+  static chargeDebit(input: {
     id: string
     transactionId: string
     walletId: string
@@ -45,16 +42,17 @@ export class LedgerEntry {
     return new LedgerEntry({
       id: input.id,
       transactionId: input.transactionId,
+      type: 'charge',
       walletId: input.walletId,
       debit: input.amount,
-      credit: input.amount.subtract(input.amount), // zero in the same currency
+      credit: input.amount.subtract(input.amount), // zero, same currency
       balanceAfter: input.balanceAfter,
       createdAt: new Date(),
     })
   }
 
-  // Factory for the "money arrived in this wallet" half of a transfer.
-  static credit(input: {
+  // Charge: destination (merchant) wallet credited.
+  static chargeCredit(input: {
     id: string
     transactionId: string
     walletId: string
@@ -64,8 +62,49 @@ export class LedgerEntry {
     return new LedgerEntry({
       id: input.id,
       transactionId: input.transactionId,
+      type: 'charge',
       walletId: input.walletId,
-      debit: input.amount.subtract(input.amount), // zero in the same currency
+      debit: input.amount.subtract(input.amount),
+      credit: input.amount,
+      balanceAfter: input.balanceAfter,
+      createdAt: new Date(),
+    })
+  }
+
+  // Refund: merchant wallet debited (the merchant gives the money back).
+  static refundDebit(input: {
+    id: string
+    transactionId: string
+    walletId: string
+    amount: Money
+    balanceAfter: Money
+  }): LedgerEntry {
+    return new LedgerEntry({
+      id: input.id,
+      transactionId: input.transactionId,
+      type: 'refund',
+      walletId: input.walletId,
+      debit: input.amount,
+      credit: input.amount.subtract(input.amount),
+      balanceAfter: input.balanceAfter,
+      createdAt: new Date(),
+    })
+  }
+
+  // Refund: original payer wallet credited (gets the money back).
+  static refundCredit(input: {
+    id: string
+    transactionId: string
+    walletId: string
+    amount: Money
+    balanceAfter: Money
+  }): LedgerEntry {
+    return new LedgerEntry({
+      id: input.id,
+      transactionId: input.transactionId,
+      type: 'refund',
+      walletId: input.walletId,
+      debit: input.amount.subtract(input.amount),
       credit: input.amount,
       balanceAfter: input.balanceAfter,
       createdAt: new Date(),
@@ -82,6 +121,9 @@ export class LedgerEntry {
   }
   get transactionId(): string {
     return this.props.transactionId
+  }
+  get type(): TransactionType {
+    return this.props.type
   }
   get walletId(): string {
     return this.props.walletId
@@ -102,6 +144,7 @@ export class LedgerEntry {
   toSnapshot(): {
     id: string
     transactionId: string
+    type: TransactionType
     walletId: string
     debit: bigint
     credit: bigint
@@ -111,6 +154,7 @@ export class LedgerEntry {
     return {
       id: this.props.id,
       transactionId: this.props.transactionId,
+      type: this.props.type,
       walletId: this.props.walletId,
       debit: this.props.debit.amount,
       credit: this.props.credit.amount,

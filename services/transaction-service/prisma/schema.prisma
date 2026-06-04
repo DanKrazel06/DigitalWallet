@@ -1,13 +1,19 @@
 // transaction-service — Prisma schema.
 //
 // Owns:
-//   - wallets    : LOCAL PROJECTION of wallet-service's wallets, kept in
-//                  sync by consuming `wallet.created` events. Source of
-//                  truth for transfers (balance debited / credited here).
-//   - transactions : business-level transfer records (one per transfer).
-//   - ledger_entries : immutable double-entry accounting movements
-//                      (2 per transfer: one debit, one credit).
-//   - outbox_events : Transactional Outbox pattern (publish to Kafka).
+//   - wallets         : LOCAL PROJECTION of wallet-service's wallets,
+//                       kept in sync by consuming `wallet.created` events.
+//                       Source of truth for balances DURING a charge or
+//                       refund (balance mutated here in the same SQL tx).
+//   - merchants       : LOCAL PROJECTION of merchant-service's merchants
+//                       (just id + status) so we can decline operations
+//                       initiated by an inactive merchant without an HTTP
+//                       round-trip.
+//   - transactions    : business-level records — one per Charge or Refund.
+//   - ledger_entries  : immutable double-entry accounting movements.
+//                       Two per `completed` transaction (debit + credit).
+//                       Zero for `declined` transactions.
+//   - outbox_events   : Transactional Outbox pattern (publish to Kafka).
 
 generator client {
   provider        = "prisma-client-js"
@@ -22,72 +28,95 @@ datasource db {
 
 // ---------------------------------------------------------------------------
 // Wallet projection — fed by wallet.created Kafka events.
-// transaction-service mutates `balance` directly during transfers; the
-// new balance is later mirrored back to wallet-service via the
-// `transaction.completed` event so wallet-service's GET /wallets stays
-// consistent (eventual consistency).
+// transaction-service mutates `balance` directly during charges/refunds;
+// the new balance is later mirrored back to wallet-service via the
+// `charge.completed` / `refund.completed` events.
 // ---------------------------------------------------------------------------
 model Wallet {
-  id        String   @id @db.Uuid                  // same id as in wallet-service
-  userId    String   @unique @map("user_id") @db.Uuid
-  balance   BigInt   @default(0)
-  currency  String   @db.VarChar(3)                // always 'USD' for now
-  status    String   @default("active")            // active | frozen | closed
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id         String   @id @db.Uuid                          // same id as in wallet-service
+  merchantId String   @unique @map("merchant_id") @db.Uuid
+  balance    Decimal  @default(0) @db.Decimal(20, 4)
+  currency   String   @db.VarChar(3)                        // always 'USD' for now
+  status     String   @default("active")                    // active | inactive
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("wallets")
 }
 
 // ---------------------------------------------------------------------------
-// Transaction — the business fact of a transfer.
-// `idempotency_key` is the UUID provided by the client in the
-// `Idempotency-Key` HTTP header; UNIQUE so repeated calls return the same
-// record instead of duplicating the transfer.
+// Merchant projection — minimal mirror of merchant-service's merchants
+// table. We only need the id + status to decline operations initiated by
+// an inactive merchant. Fed by merchant.created / merchant.status_changed.
+// ---------------------------------------------------------------------------
+model Merchant {
+  id        String   @id @db.Uuid
+  status    String   @default("active")                     // active | inactive
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("merchants")
+}
+
+// ---------------------------------------------------------------------------
+// Transaction — the business fact of a Charge or Refund.
+//
+// `type` discriminates charge vs refund.
+// `clientRequestId` is the UUID the client provides via the
+// `Idempotency-Key` HTTP header. UNIQUE so repeated calls return the
+// same record instead of duplicating the operation.
+// `originalTransactionId` is set ONLY on refunds and points to the
+// charge being refunded.
 // ---------------------------------------------------------------------------
 model Transaction {
-  id              String        @id @default(uuid()) @db.Uuid
-  idempotencyKey  String        @unique @map("idempotency_key") @db.Uuid
-  fromWalletId    String        @map("from_wallet_id") @db.Uuid
-  toWalletId      String        @map("to_wallet_id") @db.Uuid
-  fromUserId      String        @map("from_user_id") @db.Uuid
-  toUserId        String        @map("to_user_id") @db.Uuid
-  amount          BigInt
-  currency        String        @db.VarChar(3)
-  status          String                                       // completed | failed
-  failureReason   String?       @map("failure_reason")
-  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
-  ledgerEntries   LedgerEntry[]
+  id                    String        @id @default(uuid()) @db.Uuid
+  type                  String                                          // 'charge' | 'refund'
+  clientRequestId       String        @unique @map("client_request_id") @db.Uuid
+  originalTransactionId String?       @map("original_transaction_id") @db.Uuid
+  merchantId            String        @map("merchant_id") @db.Uuid
+  fromWalletId          String        @map("from_wallet_id") @db.Uuid
+  toWalletId            String        @map("to_wallet_id") @db.Uuid
+  amount                Decimal       @db.Decimal(20, 4)
+  currency              String        @db.VarChar(3)
+  status                String                                          // 'completed' | 'declined'
+  declineReason         String?       @map("decline_reason")
+  createdAt             DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  ledgerEntries         LedgerEntry[]
 
-  @@index([fromWalletId, createdAt], name: "tx_from_wallet_created_idx")
-  @@index([toWalletId, createdAt], name: "tx_to_wallet_created_idx")
+  @@index([merchantId, createdAt], name: "tx_merchant_created_idx")
+  @@index([originalTransactionId], name: "tx_original_idx")
   @@map("transactions")
 }
 
 // ---------------------------------------------------------------------------
 // LedgerEntry — immutable accounting movement.
-// Each completed Transaction generates exactly 2 entries (one debit, one
-// credit). Invariant for any transaction_id:
-//     SUM(debit) - SUM(credit) = 0
 //
-// `balance_after` is the running balance of the wallet AFTER this entry
-// is applied; lets us reconstruct historical balances without replaying
-// every entry from the beginning.
+// `type` mirrors the parent transaction (charge or refund) so reports
+// can filter by movement kind without joining.
+//
+// `debit` and `credit` use Decimal(20, 4). Invariant for any
+// transaction_id: SUM(debit) - SUM(credit) = 0 (double-entry).
+//
+// `balance_after` is the wallet's running balance AFTER this entry has
+// been applied. Lets us reconstruct historical balances without
+// replaying every entry from the beginning.
+//
+// APPEND-ONLY: never UPDATE or DELETE. Corrections happen via additional
+// compensating entries.
 // ---------------------------------------------------------------------------
 model LedgerEntry {
-  id            String       @id @default(uuid()) @db.Uuid
-  transactionId String       @map("transaction_id") @db.Uuid
-  walletId      String       @map("wallet_id") @db.Uuid
-  debit         BigInt       @default(0)
-  credit        BigInt       @default(0)
-  balanceAfter  BigInt       @map("balance_after")
-  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
-  transaction   Transaction  @relation(fields: [transactionId], references: [id])
+  id            String      @id @default(uuid()) @db.Uuid
+  transactionId String      @map("transaction_id") @db.Uuid
+  type          String                                              // 'charge' | 'refund'
+  walletId      String      @map("wallet_id") @db.Uuid
+  debit         Decimal     @default(0) @db.Decimal(20, 4)
+  credit        Decimal     @default(0) @db.Decimal(20, 4)
+  balanceAfter  Decimal     @map("balance_after") @db.Decimal(20, 4)
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
 
   @@index([walletId, createdAt], name: "ledger_wallet_created_idx")
   @@map("ledger_entries")
 }
 
-// Standard Transactional Outbox row. Shared schema across all services.
 model OutboxEvent {
   id          String    @id @default(uuid()) @db.Uuid
   aggregateId String    @map("aggregate_id")

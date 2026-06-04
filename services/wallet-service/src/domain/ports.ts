@@ -1,20 +1,17 @@
 import type { Wallet } from './wallet.js'
-import type { Currency } from './money.js'
 
 // Ports declared by the wallet-service domain.
 export interface WalletRepository {
-  findByUserAndCurrency(userId: string, currency: Currency): Promise<Wallet | null>
-  findAllByUserId(userId: string): Promise<Wallet[]>
+  findByMerchantId(merchantId: string): Promise<Wallet | null>
   findById(id: string): Promise<Wallet | null>
+  // `save` upserts so the same method works for create (from the merchant
+  // event consumer / POST /wallets) and update (status changes, balance
+  // sync from transaction.completed).
   save(wallet: Wallet): Promise<void>
 }
 
 export interface OutboxWriter {
-  append(input: {
-    aggregateId: string
-    topic: string
-    payload: unknown
-  }): Promise<void>
+  append(input: { aggregateId: string; topic: string; payload: unknown }): Promise<void>
 }
 
 export interface TransactionalPorts {

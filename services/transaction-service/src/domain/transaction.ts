@@ -1,73 +1,128 @@
 import type { Money } from './money.js'
 
-// Lifecycle of a Transaction is intentionally short: a transaction is
-// either accepted (completed) or rejected (failed) on first attempt — no
-// "pending" state. This matches the rest of the architecture: the use-case
-// either runs the full SQL transaction successfully, or persists a
-// `failed` row with the reason and stops.
-export type TransactionStatus = 'completed' | 'failed'
+export type TransactionType = 'charge' | 'refund'
+export type TransactionStatus = 'completed' | 'declined'
 
 export interface TransactionProps {
   id: string
-  idempotencyKey: string
+  type: TransactionType
+  clientRequestId: string
+  originalTransactionId: string | null
+  merchantId: string
   fromWalletId: string
   toWalletId: string
-  fromUserId: string
-  toUserId: string
   amount: Money
   status: TransactionStatus
-  failureReason: string | null
+  declineReason: string | null
   createdAt: Date
 }
 
-// Transaction entity — the business fact "X tried to transfer Y to Z".
+// Transaction entity — the business fact "merchant X performed
+// charge/refund operation between two wallets".
 //
-// Two factory methods:
-//   - recordCompleted(): produced after a successful debit+credit
-//   - recordFailed(reason): produced when a validation rule rejects the
-//     transfer (insufficient funds, frozen wallet, ...). We persist these
-//     too so the idempotency key cannot be reused and so the failure is
-//     auditable.
+// Lifecycle is intentionally one-shot: a transaction is either
+// `completed` (debit + credit committed + ledger entries written) or
+// `declined` (no ledger entries, just a row for audit + idempotency).
+//
+// Five factory methods:
+//   - recordChargeCompleted / recordChargeDeclined
+//   - recordRefundCompleted / recordRefundDeclined
+//   - rehydrate (from a persisted row)
 export class Transaction {
   private constructor(private readonly props: TransactionProps) {}
 
-  static recordCompleted(input: {
+  static recordChargeCompleted(input: {
     id: string
-    idempotencyKey: string
+    clientRequestId: string
+    merchantId: string
     fromWalletId: string
     toWalletId: string
-    fromUserId: string
-    toUserId: string
     amount: Money
   }): Transaction {
     return new Transaction({
-      ...input,
+      id: input.id,
+      type: 'charge',
+      clientRequestId: input.clientRequestId,
+      originalTransactionId: null,
+      merchantId: input.merchantId,
+      fromWalletId: input.fromWalletId,
+      toWalletId: input.toWalletId,
+      amount: input.amount,
       status: 'completed',
-      failureReason: null,
+      declineReason: null,
       createdAt: new Date(),
     })
   }
 
-  static recordFailed(input: {
+  static recordChargeDeclined(input: {
     id: string
-    idempotencyKey: string
+    clientRequestId: string
+    merchantId: string
     fromWalletId: string
     toWalletId: string
-    fromUserId: string
-    toUserId: string
     amount: Money
     reason: string
   }): Transaction {
     return new Transaction({
       id: input.id,
-      idempotencyKey: input.idempotencyKey,
+      type: 'charge',
+      clientRequestId: input.clientRequestId,
+      originalTransactionId: null,
+      merchantId: input.merchantId,
       fromWalletId: input.fromWalletId,
       toWalletId: input.toWalletId,
-      fromUserId: input.fromUserId,
-      toUserId: input.toUserId,
       amount: input.amount,
-      status: 'failed',
-      failureReason: input.reason,
+      status: 'declined',
+      declineReason: input.reason,
+      createdAt: new Date(),
+    })
+  }
+
+  static recordRefundCompleted(input: {
+    id: string
+    clientRequestId: string
+    originalTransactionId: string
+    merchantId: string
+    fromWalletId: string
+    toWalletId: string
+    amount: Money
+  }): Transaction {
+    return new Transaction({
+      id: input.id,
+      type: 'refund',
+      clientRequestId: input.clientRequestId,
+      originalTransactionId: input.originalTransactionId,
+      merchantId: input.merchantId,
+      fromWalletId: input.fromWalletId,
+      toWalletId: input.toWalletId,
+      amount: input.amount,
+      status: 'completed',
+      declineReason: null,
+      createdAt: new Date(),
+    })
+  }
+
+  static recordRefundDeclined(input: {
+    id: string
+    clientRequestId: string
+    originalTransactionId: string | null
+    merchantId: string
+    fromWalletId: string
+    toWalletId: string
+    amount: Money
+    reason: string
+  }): Transaction {
+    return new Transaction({
+      id: input.id,
+      type: 'refund',
+      clientRequestId: input.clientRequestId,
+      originalTransactionId: input.originalTransactionId,
+      merchantId: input.merchantId,
+      fromWalletId: input.fromWalletId,
+      toWalletId: input.toWalletId,
+      amount: input.amount,
+      status: 'declined',
+      declineReason: input.reason,
       createdAt: new Date(),
     })
   }
@@ -79,8 +134,17 @@ export class Transaction {
   get id(): string {
     return this.props.id
   }
-  get idempotencyKey(): string {
-    return this.props.idempotencyKey
+  get type(): TransactionType {
+    return this.props.type
+  }
+  get clientRequestId(): string {
+    return this.props.clientRequestId
+  }
+  get originalTransactionId(): string | null {
+    return this.props.originalTransactionId
+  }
+  get merchantId(): string {
+    return this.props.merchantId
   }
   get fromWalletId(): string {
     return this.props.fromWalletId
@@ -88,20 +152,14 @@ export class Transaction {
   get toWalletId(): string {
     return this.props.toWalletId
   }
-  get fromUserId(): string {
-    return this.props.fromUserId
-  }
-  get toUserId(): string {
-    return this.props.toUserId
-  }
   get amount(): Money {
     return this.props.amount
   }
   get status(): TransactionStatus {
     return this.props.status
   }
-  get failureReason(): string | null {
-    return this.props.failureReason
+  get declineReason(): string | null {
+    return this.props.declineReason
   }
   get createdAt(): Date {
     return this.props.createdAt
@@ -110,31 +168,39 @@ export class Transaction {
   isCompleted(): boolean {
     return this.props.status === 'completed'
   }
+  isCharge(): boolean {
+    return this.props.type === 'charge'
+  }
+  isRefund(): boolean {
+    return this.props.type === 'refund'
+  }
 
   toSnapshot(): {
     id: string
-    idempotencyKey: string
+    type: TransactionType
+    clientRequestId: string
+    originalTransactionId: string | null
+    merchantId: string
     fromWalletId: string
     toWalletId: string
-    fromUserId: string
-    toUserId: string
     amount: bigint
     currency: string
     status: TransactionStatus
-    failureReason: string | null
+    declineReason: string | null
     createdAt: Date
   } {
     return {
       id: this.props.id,
-      idempotencyKey: this.props.idempotencyKey,
+      type: this.props.type,
+      clientRequestId: this.props.clientRequestId,
+      originalTransactionId: this.props.originalTransactionId,
+      merchantId: this.props.merchantId,
       fromWalletId: this.props.fromWalletId,
       toWalletId: this.props.toWalletId,
-      fromUserId: this.props.fromUserId,
-      toUserId: this.props.toUserId,
       amount: this.props.amount.amount,
       currency: this.props.amount.currency,
       status: this.props.status,
-      failureReason: this.props.failureReason,
+      declineReason: this.props.declineReason,
       createdAt: this.props.createdAt,
     }
   }

@@ -1,6 +1,7 @@
 import type { PrismaClient } from '../generated/prisma/index.js'
 import type { TransactionalPorts, UnitOfWork } from '../domain/ports.js'
 import { PrismaWalletProjectionRepository } from './prisma-wallet-projection.repository.js'
+import { PrismaMerchantProjectionRepository } from './prisma-merchant-projection.repository.js'
 import { PrismaTransactionRepository } from './prisma-transaction.repository.js'
 import { PrismaLedgerRepository } from './prisma-ledger.repository.js'
 import { PrismaOutboxWriter } from './prisma-outbox.writer.js'
@@ -25,6 +26,7 @@ export class PrismaUnitOfWork implements UnitOfWork {
       async (tx: PrismaLike) => {
         const ports: TransactionalPorts = {
           wallets: new PrismaWalletProjectionRepository(tx),
+          merchants: new PrismaMerchantProjectionRepository(tx),
           transactions: new PrismaTransactionRepository(tx),
           ledger: new PrismaLedgerRepository(tx),
           outbox: new PrismaOutboxWriter(tx),

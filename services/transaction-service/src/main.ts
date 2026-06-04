@@ -8,13 +8,22 @@ import { loadConfig } from './config.js'
 
 import { createPrismaClient } from './infrastructure/prisma-client.js'
 import { PrismaWalletProjectionRepository } from './infrastructure/prisma-wallet-projection.repository.js'
+import { PrismaMerchantProjectionRepository } from './infrastructure/prisma-merchant-projection.repository.js'
 import { PrismaTransactionRepository } from './infrastructure/prisma-transaction.repository.js'
 import { PrismaUnitOfWork } from './infrastructure/prisma-unit-of-work.js'
 import { createWalletEventConsumer } from './infrastructure/wallet-event.consumer.js'
+import { createMerchantEventConsumer } from './infrastructure/merchant-event.consumer.js'
 
-import { CreateTransferUseCase } from './application/create-transfer.use-case.js'
-import { ProjectWalletFromCreatedUseCase } from './application/project-wallet.use-case.js'
+import { CreateChargeUseCase } from './application/create-charge.use-case.js'
+import { CreateRefundUseCase } from './application/create-refund.use-case.js'
+import { ProjectWalletFromCreatedUseCase, ProjectWalletStatusUseCase } from './application/project-wallet.use-case.js'
+import {
+  ProjectMerchantFromCreatedUseCase,
+  ProjectMerchantStatusUseCase,
+} from './application/project-merchant.use-case.js'
 import { TransactionService } from './application/transaction.service.js'
+import { LedgerService } from './application/ledger.service.js'
+import { PrismaLedgerRepository } from './infrastructure/prisma-ledger.repository.js'
 
 import { registerRoutes } from './interfaces/http/routes.js'
 import { errorHandler } from './interfaces/http/error-handler.js'
@@ -34,13 +43,20 @@ async function bootstrap(): Promise<void> {
 
   // 3. Infrastructure adapters
   const walletsRepo = new PrismaWalletProjectionRepository(prisma)
+  const merchantsRepo = new PrismaMerchantProjectionRepository(prisma)
   const transactionsRepo = new PrismaTransactionRepository(prisma)
+  const ledgerRepo = new PrismaLedgerRepository(prisma)
   const unitOfWork = new PrismaUnitOfWork(prisma)
 
   // 4. Application layer
   const transactionService = new TransactionService(transactionsRepo)
-  const createTransferUseCase = new CreateTransferUseCase(transactionsRepo, unitOfWork)
+  const ledgerService = new LedgerService(ledgerRepo, walletsRepo, transactionsRepo)
+  const createChargeUseCase = new CreateChargeUseCase(transactionsRepo, unitOfWork)
+  const createRefundUseCase = new CreateRefundUseCase(transactionsRepo, unitOfWork)
   const projectWalletUseCase = new ProjectWalletFromCreatedUseCase(walletsRepo)
+  const projectWalletStatusUseCase = new ProjectWalletStatusUseCase(walletsRepo)
+  const projectMerchantUseCase = new ProjectMerchantFromCreatedUseCase(merchantsRepo)
+  const projectMerchantStatusUseCase = new ProjectMerchantStatusUseCase(merchantsRepo)
 
   // 5. HTTP server
   const app = Fastify({
@@ -61,10 +77,16 @@ async function bootstrap(): Promise<void> {
   app.setSerializerCompiler(serializerCompiler)
   app.setErrorHandler(errorHandler)
   app.get('/health', async () => ({ status: 'ok', service: 'transaction-service' }))
-  await registerRoutes(app, { createTransferUseCase, transactionService })
+  await registerRoutes(app, {
+    transactionService,
+    ledgerService,
+    createChargeUseCase,
+    createRefundUseCase,
+  })
 
-  // 6. Kafka — outbox relay (publishes transaction.completed / failed)
-  //         + consumer of walletdigital.wallet to keep the projection in sync.
+  // 6. Kafka — outbox relay (publishes charge/refund completed/declined)
+  //         + consumers of walletdigital.wallet and walletdigital.merchant
+  //         to keep the local projections in sync.
   const eventPublisher = await createEventPublisher({ kafka, logger })
   const outboxRelay = createOutboxRelay({ prisma, publisher: eventPublisher, logger })
   outboxRelay.start()
@@ -72,10 +94,20 @@ async function bootstrap(): Promise<void> {
   const walletConsumer = await createWalletEventConsumer({
     kafka,
     logger,
-    groupId: config.KAFKA_CONSUMER_GROUP,
+    groupId: `${config.KAFKA_CONSUMER_GROUP}-wallet`,
     projectWallet: projectWalletUseCase,
+    projectWalletStatus: projectWalletStatusUseCase,
   })
   await walletConsumer.run()
+
+  const merchantConsumer = await createMerchantEventConsumer({
+    kafka,
+    logger,
+    groupId: `${config.KAFKA_CONSUMER_GROUP}-merchant`,
+    projectMerchant: projectMerchantUseCase,
+    projectMerchantStatus: projectMerchantStatusUseCase,
+  })
+  await merchantConsumer.run()
 
   // 7. Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
@@ -83,6 +115,7 @@ async function bootstrap(): Promise<void> {
     try {
       await app.close()
       await walletConsumer.disconnect()
+      await merchantConsumer.disconnect()
       await outboxRelay.stop()
       await eventPublisher.disconnect()
       await prisma.$disconnect()

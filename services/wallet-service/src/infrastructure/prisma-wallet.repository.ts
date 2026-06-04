@@ -1,26 +1,24 @@
-import { Money, type Currency, isCurrency } from '../domain/money.js'
+import { Money, assertCurrency } from '@walletdigital/money'
 import { Wallet, type WalletStatus } from '../domain/wallet.js'
 import type { WalletRepository } from '../domain/ports.js'
 import type { PrismaLike } from './prisma-types.js'
 
 // PrismaWalletRepository — concrete implementation of WalletRepository.
 //
-// `balance` is stored as BigInt in Postgres. We translate it through the
-// Money value object so the domain never sees raw bigints (would risk
-// being mixed up with a different currency at the call site).
+// Money flows through `Money` value object internally (bigint minor
+// units). DB stores `balance` as Decimal(20, 4); we use
+// `Money.fromDecimalString` / `Money.toDecimalString` at this boundary
+// to translate without ever touching a JS float.
+//
+// `save` uses upsert so the same method handles create (from the
+// merchant event consumer / POST /wallets) and update (status changes,
+// balance sync from `transaction.completed`).
 export class PrismaWalletRepository implements WalletRepository {
   constructor(private readonly prisma: PrismaLike) {}
 
-  async findByUserAndCurrency(userId: string, currency: Currency): Promise<Wallet | null> {
-    const row = await this.prisma.wallet.findUnique({
-      where: { wallets_user_currency_unique: { userId, currency } },
-    })
+  async findByMerchantId(merchantId: string): Promise<Wallet | null> {
+    const row = await this.prisma.wallet.findUnique({ where: { merchantId } })
     return row === null ? null : this.toDomain(row)
-  }
-
-  async findAllByUserId(userId: string): Promise<Wallet[]> {
-    const rows = await this.prisma.wallet.findMany({ where: { userId } })
-    return rows.map((row) => this.toDomain(row))
   }
 
   async findById(id: string): Promise<Wallet | null> {
@@ -30,15 +28,21 @@ export class PrismaWalletRepository implements WalletRepository {
 
   async save(wallet: Wallet): Promise<void> {
     const snap = wallet.toSnapshot()
-    await this.prisma.wallet.create({
-      data: {
+    const balanceDecimal = wallet.balance.toDecimalString()
+    await this.prisma.wallet.upsert({
+      where: { id: snap.id },
+      create: {
         id: snap.id,
-        userId: snap.userId,
-        accountId: snap.accountId,
-        balance: snap.balance,
+        merchantId: snap.merchantId,
         currency: snap.currency,
+        balance: balanceDecimal,
         status: snap.status,
         createdAt: snap.createdAt,
+        updatedAt: snap.updatedAt,
+      },
+      update: {
+        balance: balanceDecimal,
+        status: snap.status,
         updatedAt: snap.updatedAt,
       },
     })
@@ -47,27 +51,21 @@ export class PrismaWalletRepository implements WalletRepository {
   // toDomain — translate a raw Prisma row into a fully-formed Wallet
   // entity. Validates the currency string (must be a supported ISO code)
   // and reconstructs the Money value object so callers never deal with
-  // a raw bigint disconnected from its currency.
+  // a raw Decimal disconnected from its currency.
   private toDomain(row: {
     id: string
-    userId: string
-    accountId: string
-    balance: bigint
+    merchantId: string
+    balance: { toString(): string }
     currency: string
     status: string
     createdAt: Date
     updatedAt: Date
   }): Wallet {
-    if (!isCurrency(row.currency)) {
-      // Trust boundary: a row out-of-sync with our supported currencies
-      // is a developer / migration error. Better to fail loudly here.
-      throw new Error(`Unsupported currency in wallet row: ${row.currency}`)
-    }
+    const currency = assertCurrency(row.currency)
     return Wallet.rehydrate({
       id: row.id,
-      userId: row.userId,
-      accountId: row.accountId,
-      balance: Money.fromMinor(row.balance, row.currency),
+      merchantId: row.merchantId,
+      balance: Money.fromDecimalString(row.balance.toString(), currency),
       status: row.status as WalletStatus,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,

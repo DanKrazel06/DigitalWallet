@@ -6,8 +6,7 @@ import type { WalletStatus } from '../domain/wallet.js'
 // across JSON. Clients are expected to format it for display.
 export interface WalletDto {
   id: string
-  userId: string
-  accountId: string
+  merchantId: string
   currency: Currency
   balance: string
   status: WalletStatus
@@ -15,10 +14,15 @@ export interface WalletDto {
   updatedAt: string
 }
 
-export interface GetWalletsByUserIdInput {
-  userId: string
+export interface GetWalletByMerchantInput {
+  merchantId: string
 }
 
 export interface GetWalletByIdInput {
   id: string
+}
+
+export interface UpdateWalletStatusInput {
+  id: string
+  status: WalletStatus
 }

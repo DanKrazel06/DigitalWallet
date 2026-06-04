@@ -1,42 +1,38 @@
 import { Wallet } from '../domain/wallet.js'
 import type { WalletRepository, UnitOfWork } from '../domain/ports.js'
 import { TOPICS, buildEnvelope } from '@walletdigital/events'
-import type {
-  CreateWalletFromAccountInput,
-  CreateWalletFromAccountOutput,
-} from './create-wallet.dto.js'
+import type { CreateWalletForMerchantInput, CreateWalletForMerchantOutput } from './create-wallet.dto.js'
 
-// CreateWalletFromAccountUseCase — provisions a wallet in reaction to
-// an `account.created` event from account-service.
+// CreateWalletForMerchantUseCase — provisions the wallet attached to a
+// merchant in reaction to a `merchant.created` event.
 //
 // Atomicity: the wallet row AND the `wallet.created` outbox event are
 // written in the SAME Postgres transaction via UnitOfWork. The outbox
-// relay later publishes to Kafka so downstream services (notification,
-// transaction) can react.
+// relay later publishes to Kafka so downstream services (transaction)
+// can react.
 //
 // Idempotency: Kafka delivery is at-least-once. If the same
-// `account.created` event is redelivered, we must NOT create a second
-// wallet. We check `findByUserAndCurrency(userId, currency)` first and
-// rely on the UNIQUE (userId, currency) constraint as a final safety net
-// (P2002 caught and treated as "already done").
-export class CreateWalletFromAccountUseCase {
+// `merchant.created` event is redelivered, we must NOT create a second
+// wallet. We check `findByMerchantId(merchantId)` first and rely on the
+// UNIQUE (merchantId) constraint as a final safety net (P2002 caught and
+// treated as "already done").
+export class CreateWalletForMerchantUseCase {
   constructor(
     private readonly wallets: WalletRepository,
     private readonly uow: UnitOfWork,
   ) {}
 
-  async execute(input: CreateWalletFromAccountInput): Promise<CreateWalletFromAccountOutput | null> {
+  async execute(input: CreateWalletForMerchantInput): Promise<CreateWalletForMerchantOutput | null> {
     // Fast path — already provisioned. Cheaper than catching a constraint
     // violation, and it's the most likely case for a redelivered event.
-    const existing = await this.wallets.findByUserAndCurrency(input.userId, input.currency)
+    const existing = await this.wallets.findByMerchantId(input.merchantId)
     if (existing !== null) {
       return null
     }
 
-    const wallet = Wallet.createFromAccount({
+    const wallet = Wallet.createForMerchant({
       id: crypto.randomUUID(),
-      userId: input.userId,
-      accountId: input.accountId,
+      merchantId: input.merchantId,
       currency: input.currency,
     })
 
@@ -45,9 +41,9 @@ export class CreateWalletFromAccountUseCase {
         await wallets.save(wallet)
       } catch (err) {
         if (isUniqueViolation(err)) {
-          // Race condition: another consumer / a redelivery just created
-          // the wallet between our findByUserAndCurrency and our save.
-          // Treat as success so the Kafka offset can commit.
+          // Race: another consumer / redelivery just created the wallet
+          // between findByMerchantId and save. Commit silently so the
+          // Kafka offset moves forward.
           return
         }
         throw err
@@ -60,8 +56,7 @@ export class CreateWalletFromAccountUseCase {
           ...buildEnvelope('wallet.created'),
           payload: {
             walletId: wallet.id,
-            userId: wallet.userId,
-            accountId: wallet.accountId,
+            merchantId: wallet.merchantId,
             currency: wallet.currency,
             balance: wallet.balance.toMinorString(),
             createdAt: wallet.createdAt.toISOString(),
@@ -72,8 +67,7 @@ export class CreateWalletFromAccountUseCase {
 
     return {
       walletId: wallet.id,
-      userId: wallet.userId,
-      accountId: wallet.accountId,
+      merchantId: wallet.merchantId,
       currency: wallet.currency,
       balance: wallet.balance.toMinorString(),
       createdAt: wallet.createdAt.toISOString(),
@@ -82,10 +76,5 @@ export class CreateWalletFromAccountUseCase {
 }
 
 function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code: unknown }).code === 'P2002'
-  )
+  return typeof err === 'object' && err !== null && 'code' in err && (err as { code: unknown }).code === 'P2002'
 }

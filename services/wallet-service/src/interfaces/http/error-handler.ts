@@ -1,7 +1,8 @@
 import { createErrorHandler } from '@walletdigital/http'
+import type { DomainError } from '../../domain/errors.js'
 import {
-  DomainError,
   InvalidCurrencyError,
+  InvalidWalletStatusError,
   WalletAlreadyExistsError,
   WalletNotFoundError,
 } from '../../domain/errors.js'
@@ -11,5 +12,6 @@ export const errorHandler = createErrorHandler((err: DomainError) => {
   if (err instanceof WalletNotFoundError) return 404
   if (err instanceof WalletAlreadyExistsError) return 409
   if (err instanceof InvalidCurrencyError) return 400
+  if (err instanceof InvalidWalletStatusError) return 400
   return 400
 })

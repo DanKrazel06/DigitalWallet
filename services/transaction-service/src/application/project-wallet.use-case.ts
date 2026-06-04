@@ -1,17 +1,14 @@
 import { Money } from '../domain/money.js'
 import { WalletProjection } from '../domain/wallet-projection.js'
 import type { WalletProjectionRepository } from '../domain/ports.js'
-import type { ProjectWalletFromCreatedInput } from './project-wallet.dto.js'
+import type { ProjectWalletFromCreatedInput, ProjectWalletStatusInput } from './project-wallet.dto.js'
 
-// ProjectWalletFromCreatedUseCase — consume a `wallet.created` Kafka
-// event and INSERT the matching row into transaction-service's local
-// projection table.
+// ProjectWalletFromCreatedUseCase — consumes a `wallet.created` event
+// and INSERTs the matching row in transaction-service's local projection.
 //
-// Idempotent: Kafka delivery is at-least-once. If the same event is
-// redelivered, `findById` returns the existing row and we no-op. The
-// repository's INSERT also uses the wallet-service-issued id as primary
-// key, so a duplicate would be caught by Postgres' unique constraint as
-// a safety net.
+// Idempotent: at-least-once delivery means events may be redelivered.
+// findById short-circuits when the row already exists; the unique
+// constraint on `id` catches concurrent inserts as a safety net.
 export class ProjectWalletFromCreatedUseCase {
   constructor(private readonly wallets: WalletProjectionRepository) {}
 
@@ -23,15 +20,13 @@ export class ProjectWalletFromCreatedUseCase {
 
     const projection = WalletProjection.fromCreatedEvent({
       id: input.walletId,
-      userId: input.userId,
+      merchantId: input.merchantId,
       balance: Money.fromMinor(BigInt(input.balance), input.currency),
     })
 
     try {
       await this.wallets.insert(projection)
     } catch (err) {
-      // Race against another redelivery of the same event — treat as
-      // success so the Kafka offset can commit.
       if (isUniqueViolation(err)) {
         return { created: false }
       }
@@ -42,11 +37,27 @@ export class ProjectWalletFromCreatedUseCase {
   }
 }
 
+// ProjectWalletStatusUseCase — consumes `wallet.status_changed`.
+// Idempotent: no-op if status is already correct or row missing.
+export class ProjectWalletStatusUseCase {
+  constructor(private readonly wallets: WalletProjectionRepository) {}
+
+  async execute(input: ProjectWalletStatusInput): Promise<{ updated: boolean }> {
+    const existing = await this.wallets.findById(input.walletId)
+    if (existing === null) {
+      // Event arrived before the wallet.created event. Drop — the
+      // wallet.created consumer will see the correct status when it
+      // eventually catches up.
+      return { updated: false }
+    }
+    if (existing.status === input.status) {
+      return { updated: false }
+    }
+    await this.wallets.update(existing.withStatus(input.status))
+    return { updated: true }
+  }
+}
+
 function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code: unknown }).code === 'P2002'
-  )
+  return typeof err === 'object' && err !== null && 'code' in err && (err as { code: unknown }).code === 'P2002'
 }

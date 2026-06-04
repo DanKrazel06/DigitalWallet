@@ -1,10 +1,10 @@
-import { Money } from './money.js'
+import type { Money } from './money.js'
 
-export type WalletStatus = 'active' | 'frozen' | 'closed'
+export type WalletStatus = 'active' | 'inactive'
 
 export interface WalletProjectionProps {
   id: string
-  userId: string
+  merchantId: string
   balance: Money
   status: WalletStatus
   updatedAt: Date
@@ -12,32 +12,28 @@ export interface WalletProjectionProps {
 
 // WalletProjection — local read/write view of a wallet, mirrored from
 // wallet-service via the `wallet.created` event and mutated locally on
-// every completed transfer.
+// every completed charge / refund.
 //
-// Distinct from wallet-service's Wallet entity: this projection is owned
-// by transaction-service and is the source of truth for balances DURING
-// a transfer. wallet-service eventually syncs its own copy via the
-// `transaction.completed` event we publish after each transfer.
+// Distinct from wallet-service's Wallet entity: this projection is
+// owned by transaction-service and is the source of truth for balances
+// DURING a charge or refund. wallet-service eventually syncs its own
+// copy via the `charge.completed` / `refund.completed` events we publish
+// after each operation.
 export class WalletProjection {
   private constructor(private readonly props: WalletProjectionProps) {}
 
   // Initial creation from a `wallet.created` event consumed off Kafka.
   // The id matches wallet-service's row id so we can map both views.
-  static fromCreatedEvent(input: {
-    id: string
-    userId: string
-    balance: Money
-  }): WalletProjection {
+  static fromCreatedEvent(input: { id: string; merchantId: string; balance: Money }): WalletProjection {
     return new WalletProjection({
       id: input.id,
-      userId: input.userId,
+      merchantId: input.merchantId,
       balance: input.balance,
       status: 'active',
       updatedAt: new Date(),
     })
   }
 
-  // Rebuild from a persisted row (used by the repository).
   static rehydrate(props: WalletProjectionProps): WalletProjection {
     return new WalletProjection(props)
   }
@@ -64,11 +60,19 @@ export class WalletProjection {
     })
   }
 
+  withStatus(status: WalletStatus): WalletProjection {
+    return new WalletProjection({
+      ...this.props,
+      status,
+      updatedAt: new Date(),
+    })
+  }
+
   get id(): string {
     return this.props.id
   }
-  get userId(): string {
-    return this.props.userId
+  get merchantId(): string {
+    return this.props.merchantId
   }
   get balance(): Money {
     return this.props.balance
@@ -86,7 +90,7 @@ export class WalletProjection {
 
   toSnapshot(): {
     id: string
-    userId: string
+    merchantId: string
     balance: bigint
     currency: string
     status: WalletStatus
@@ -94,7 +98,7 @@ export class WalletProjection {
   } {
     return {
       id: this.props.id,
-      userId: this.props.userId,
+      merchantId: this.props.merchantId,
       balance: this.props.balance.amount,
       currency: this.props.balance.currency,
       status: this.props.status,

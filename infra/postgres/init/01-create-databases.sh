@@ -1,7 +1,7 @@
 #!/bin/bash
-# Crée une base par microservice dans un seul cluster PostgreSQL.
-# Postgres exécute automatiquement les scripts placés dans
-# /docker-entrypoint-initdb.d/ au premier démarrage du conteneur.
+# Creates one database per microservice inside a single PostgreSQL cluster.
+# Postgres automatically executes scripts placed in
+# /docker-entrypoint-initdb.d/ on the FIRST boot of a fresh volume.
 
 set -euo pipefail
 
@@ -14,8 +14,12 @@ create_db() {
 EOSQL
 }
 
-create_db "${POSTGRES_DB_AUTH:-auth}"
-create_db "${POSTGRES_DB_ACCOUNT:-account}"
+# Merchant + Charge/Refund model:
+#   merchant   — merchant-service (renamed from account)
+#   wallet     — wallet-service
+#   transaction — transaction-service
+# The legacy auth/account DBs are no longer created.
+create_db "${POSTGRES_DB_MERCHANT:-merchant}"
 create_db "${POSTGRES_DB_WALLET:-wallet}"
 create_db "${POSTGRES_DB_TRANSACTION:-transaction}"
 

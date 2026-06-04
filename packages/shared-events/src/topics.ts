@@ -2,8 +2,7 @@
 // All produce/consume calls reference these constants to avoid typos
 // and to allow a global rename in one place.
 export const TOPICS = {
-  USER: 'walletdigital.user',
-  ACCOUNT: 'walletdigital.account',
+  MERCHANT: 'walletdigital.merchant',
   WALLET: 'walletdigital.wallet',
   TRANSACTION: 'walletdigital.transaction',
   NOTIFICATION: 'walletdigital.notification',

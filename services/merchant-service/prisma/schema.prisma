@@ -1,0 +1,53 @@
+// merchant-service — Prisma schema.
+// Owns the Merchant aggregate: business identity, status, API credentials.
+// A Merchant is the actor that INITIATES charges/refunds in our model.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+  output          = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Merchant — identity record for an actor that owns a wallet.
+//
+// `type` discriminates the kind of actor — 'employee' (an individual) or
+// 'company' (a corporate entity). Each merchant has one wallet
+// auto-provisioned by wallet-service when it consumes `merchant.created`.
+//
+// `status` toggles between 'active' and 'inactive'. Authentication
+// (API keys, JWT, etc.) is intentionally out of scope for this milestone.
+// ---------------------------------------------------------------------------
+model Merchant {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  type      String   // 'employee' | 'company'
+  status    String   @default("active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("merchants")
+}
+
+// ---------------------------------------------------------------------------
+// OutboxEvent — Transactional Outbox row, same shape as in every service.
+// Each business write that should produce a Kafka event also appends a
+// row here in the SAME Postgres transaction. The outbox relay worker
+// publishes pending rows to Kafka and marks them as published.
+// ---------------------------------------------------------------------------
+model OutboxEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  aggregateId String    @map("aggregate_id")
+  topic       String
+  payload     Json
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(6)
+
+  @@index([publishedAt, createdAt], name: "outbox_pending_idx")
+  @@map("outbox_events")
+}

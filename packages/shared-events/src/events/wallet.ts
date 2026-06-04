@@ -10,16 +10,20 @@ export type CurrencyCode = z.infer<typeof currencyCodeSchema>
 
 // ---------------------------------------------------------------------------
 // wallet.created — emitted by wallet-service after a wallet is provisioned
-// in reaction to an `account.created` event.
+// in reaction to a `merchant.created` event.
 //
-// `balance` is the wallet balance in MINOR UNITS of the currency (cents
-// for EUR/USD/GBP), carried as a string so JSON can safely transport
-// bigint values without floating-point loss. Never use floats for money.
+// One wallet per merchant (mono-currency USD for this milestone), so the
+// only owner reference we need is `merchantId`. The merchant's `type`
+// (employee/company) lives in merchant-service and is NOT duplicated here.
+//
+// `balance` is carried as a non-negative integer string in MINOR UNITS
+// (cents for USD) so JSON can safely transport bigint values without
+// floating-point loss. The DB column is Decimal(20, 4); the wire format
+// stays canonical (minor units) across the system.
 // ---------------------------------------------------------------------------
 export const walletCreatedPayloadSchema = z.object({
   walletId: z.string().uuid(),
-  userId: z.string().uuid(),
-  accountId: z.string().uuid(),
+  merchantId: z.string().uuid(),
   currency: currencyCodeSchema,
   balance: z.string().regex(/^\d+$/, 'balance must be a non-negative integer string'),
   createdAt: z.string().datetime(),
@@ -32,7 +36,24 @@ export const walletCreatedSchema = eventEnvelopeSchema.extend({
 
 export type WalletCreatedEvent = z.infer<typeof walletCreatedSchema>
 
-// Union of all events on `walletdigital.wallet`. Easy to extend with
-// `wallet.frozen`, `wallet.closed`, etc. later — just add to the array.
-export const walletEventSchema = z.discriminatedUnion('type', [walletCreatedSchema])
+// ---------------------------------------------------------------------------
+// wallet.status_changed — emitted when an admin toggles a wallet between
+// 'active' and 'inactive'. transaction-service consumes this to update
+// its local projection and block charges/refunds against inactive wallets.
+// ---------------------------------------------------------------------------
+export const walletStatusChangedPayloadSchema = z.object({
+  walletId: z.string().uuid(),
+  status: z.enum(['active', 'inactive']),
+  changedAt: z.string().datetime(),
+})
+
+export const walletStatusChangedSchema = eventEnvelopeSchema.extend({
+  type: z.literal('wallet.status_changed'),
+  payload: walletStatusChangedPayloadSchema,
+})
+
+export type WalletStatusChangedEvent = z.infer<typeof walletStatusChangedSchema>
+
+// Union of all events on `walletdigital.wallet`. Discriminated by `type`.
+export const walletEventSchema = z.discriminatedUnion('type', [walletCreatedSchema, walletStatusChangedSchema])
 export type WalletEvent = z.infer<typeof walletEventSchema>
