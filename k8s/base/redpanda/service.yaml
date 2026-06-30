@@ -1,0 +1,23 @@
+# =============================================================================
+# Service (headless) — Redpanda
+#
+# Donne le nom DNS stable "redpanda" au broker. Les services applicatifs
+# utiliseront "redpanda:9092" dans KAFKA_BROKERS.
+#
+# Headless (clusterIP: None) car associe a un StatefulSet, comme Postgres.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda
+spec:
+  clusterIP: None
+  selector:
+    app: redpanda
+  ports:
+    - name: kafka
+      port: 9092
+      targetPort: 9092
+    - name: admin
+      port: 9644
+      targetPort: 9644

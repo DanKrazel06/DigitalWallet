@@ -1,0 +1,15 @@
+# ConfigMap — variables non sensibles du wallet-service (cf. src/config.ts).
+# Specificite : DEFAULT_CURRENCY (valide contre SUPPORTED_CURRENCIES).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wallet-service-config
+data:
+  HOST: '0.0.0.0'
+  PORT: '3003'
+  NODE_ENV: 'production'
+  LOG_LEVEL: 'info'
+  KAFKA_BROKERS: 'redpanda:9092'
+  KAFKA_CLIENT_ID: 'wallet-service'
+  KAFKA_CONSUMER_GROUP: 'wallet-service'
+  DEFAULT_CURRENCY: 'USD'

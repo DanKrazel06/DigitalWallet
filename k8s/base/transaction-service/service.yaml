@@ -1,0 +1,24 @@
+# =============================================================================
+# Service (ClusterIP) — transaction-service
+#
+# ClusterIP = adresse IP virtuelle STABLE, joignable uniquement DANS le cluster.
+# Ce n'est pas un Service de type "LoadBalancer" (qui provisionnerait un LB
+# cloud externe, inutile et non fonctionnel en local), MAIS il repartit quand
+# meme le trafic entre les replicas du Deployment (round-robin via kube-proxy).
+# Quand on scalera a N replicas (etape 6), ce Service equilibrera les requetes.
+#
+# Pour tester depuis la machine hote, on utilisera `kubectl port-forward`.
+# Nom DNS interne : "transaction-service:3004".
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-service
+spec:
+  type: ClusterIP
+  selector:
+    app: transaction-service
+  ports:
+    - name: http
+      port: 3004
+      targetPort: http

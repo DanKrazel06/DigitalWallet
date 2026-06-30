@@ -1,0 +1,42 @@
+# =============================================================================
+# Job — migration Prisma du transaction-service
+#
+# Un Job execute des pods jusqu'a ce qu'ils REUSSISSENT (exit 0), puis s'arrete.
+# C'est l'objet adapte a une tache ponctuelle comme `prisma migrate deploy`
+# (≠ Deployment, qui maintient un process en vie indefiniment).
+#
+# Ordre voulu : ce Job applique le schema AVANT que le Deployment du service ne
+# demarre pour de bon. En pratique, le service peut redemarrer en boucle tant
+# que la table n'existe pas ; une fois le Job termine, il se stabilise.
+# =============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: transaction-service-migrate
+spec:
+  # Nombre de tentatives avant d'abandonner si la migration echoue.
+  backoffLimit: 6
+  # Nettoyage automatique du Job 5 min apres sa fin (evite l'accumulation).
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: transaction-service
+        role: migrate
+    spec:
+      # Un Job ne doit jamais "redemarrer pour toujours" : on echoue le pod et
+      # le Job en relance un nouveau (dans la limite de backoffLimit).
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: walletdigital/transaction-service-migrate:dev
+          # imagePullPolicy: Never -> on FORCE l'usage de l'image locale chargee
+          # dans kind (sinon K8s tenterait de la tirer d'un registre distant et
+          # echouerait, car l'image n'existe que localement).
+          imagePullPolicy: Never
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: transaction-service-secret
+                  key: DATABASE_URL

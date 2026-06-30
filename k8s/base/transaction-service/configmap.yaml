@@ -1,0 +1,23 @@
+# =============================================================================
+# ConfigMap — variables d'environnement NON sensibles du transaction-service
+#
+# Ces valeurs correspondent au schema Zod de src/config.ts. Tout ce qui n'est
+# pas secret va ici ; le mot de passe (dans DATABASE_URL) va dans un Secret.
+#
+# Points cles vs le dev local :
+#   - HOST=0.0.0.0 : ecoute sur toutes les interfaces (obligatoire en conteneur).
+#   - KAFKA_BROKERS=redpanda:9092 : nom DNS interne du Service Redpanda
+#     (remplace le localhost:9092 du dev local).
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: transaction-service-config
+data:
+  HOST: '0.0.0.0'
+  PORT: '3004'
+  NODE_ENV: 'production'
+  LOG_LEVEL: 'info'
+  KAFKA_BROKERS: 'redpanda:9092'
+  KAFKA_CLIENT_ID: 'transaction-service'
+  KAFKA_CONSUMER_GROUP: 'transaction-service'

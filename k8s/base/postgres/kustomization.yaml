@@ -1,0 +1,10 @@
+# Kustomization du composant Postgres.
+# Regroupe les 4 ressources qui forment la base de donnees. Un parent
+# (k8s/base/kustomization.yaml, cree a l'etape 6) pourra inclure ce dossier.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - secret.yaml
+  - configmap-init.yaml
+  - statefulset.yaml
+  - service.yaml

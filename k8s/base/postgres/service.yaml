@@ -1,0 +1,23 @@
+# =============================================================================
+# Service (headless) — PostgreSQL
+#
+# Un Service donne une adresse reseau STABLE a un ensemble de pods. Ici les
+# autres pods joindront Postgres via le nom DNS "postgres:5432" — c'est ce qui
+# remplace le "localhost:5433" du dev local (le hack du port 5433 disparait).
+#
+# clusterIP: None => Service "headless". Pour un StatefulSet, c'est le choix
+# habituel : il publie un DNS stable par pod (postgres-0.postgres) plutot qu'une
+# IP virtuelle qui balance le trafic. Avec un seul replica, "postgres" suffit.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432

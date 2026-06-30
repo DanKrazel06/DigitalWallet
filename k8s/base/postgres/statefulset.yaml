@@ -1,0 +1,96 @@
+# =============================================================================
+# StatefulSet — PostgreSQL
+#
+# Pourquoi un StatefulSet et pas un Deployment ?
+#   - Postgres stocke des DONNEES qui doivent survivre au redemarrage du pod.
+#   - Un StatefulSet donne au pod une identite stable (nom "postgres-0") et un
+#     volume persistant attache de facon stable via volumeClaimTemplates.
+#   - Un Deployment, lui, est concu pour des pods interchangeables et sans etat.
+# =============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  # serviceName relie le StatefulSet au Service headless (DNS stable).
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          # Variables d'environnement de l'image officielle postgres.
+          env:
+            # User + password lus depuis le Secret (jamais en clair ici).
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
+            # Base administrative par defaut ; les 3 bases metier sont creees
+            # par le script d'init monte ci-dessous.
+            - name: POSTGRES_DB
+              value: postgres
+            # PGDATA dans un sous-dossier : l'image refuse d'initialiser si le
+            # point de montage racine contient le dossier lost+found.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            # Volume persistant pour les donnees (cf. volumeClaimTemplates).
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            # Le script d'init, monte depuis le ConfigMap. Postgres execute
+            # tout ce qui est dans ce dossier au premier boot d'un volume vide.
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          # Readiness : le pod n'est "pret" (et donc joignable par les services)
+          # que lorsque Postgres accepte reellement les connexions.
+          readinessProbe:
+            exec:
+              command: ['sh', '-c', 'pg_isready -U "$POSTGRES_USER" -d postgres']
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          # Liveness : redemarre le conteneur si Postgres se fige durablement.
+          livenessProbe:
+            exec:
+              command: ['sh', '-c', 'pg_isready -U "$POSTGRES_USER" -d postgres']
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: '1'
+              memory: 512Mi
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init
+            # Rend le script executable (0555) une fois monte.
+            defaultMode: 0555
+  # volumeClaimTemplates : K8s cree automatiquement un PersistentVolumeClaim
+  # par replica. Le volume est conserve meme si le pod est recree.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ['ReadWriteOnce']
+        resources:
+          requests:
+            storage: 1Gi

@@ -1,0 +1,13 @@
+# ConfigMap — variables non sensibles du merchant-service (cf. src/config.ts).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: merchant-service-config
+data:
+  HOST: '0.0.0.0'
+  PORT: '3002'
+  NODE_ENV: 'production'
+  LOG_LEVEL: 'info'
+  KAFKA_BROKERS: 'redpanda:9092'
+  KAFKA_CLIENT_ID: 'merchant-service'
+  KAFKA_CONSUMER_GROUP: 'merchant-service'

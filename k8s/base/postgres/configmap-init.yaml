@@ -1,0 +1,39 @@
+# =============================================================================
+# ConfigMap — script d'initialisation des bases
+#
+# Un ConfigMap stocke de la configuration NON sensible. Ici on y met le script
+# shell qui cree une base par microservice. L'image postgres execute
+# automatiquement tout script depose dans /docker-entrypoint-initdb.d/ au
+# PREMIER demarrage d'un volume vide.
+#
+# On monte ce ConfigMap comme un fichier dans ce repertoire (voir statefulset).
+# C'est l'equivalent K8s du montage de volume fait dans docker-compose.yml.
+#
+# NOTE : ce script est une copie de infra/postgres/init/01-create-databases.sh.
+# On aurait pu utiliser `kubectl create configmap --from-file`, mais l'inscrire
+# en clair ici garde le manifest auto-suffisant et lisible.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+data:
+  01-create-databases.sh: |
+    #!/bin/bash
+    # Cree une base par microservice dans un seul cluster PostgreSQL.
+    set -euo pipefail
+
+    create_db() {
+      local dbname="$1"
+      echo "[init] creating database: $dbname"
+      psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<-EOSQL
+        SELECT 'CREATE DATABASE "$dbname"'
+        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$dbname')\gexec
+    EOSQL
+    }
+
+    create_db "merchant"
+    create_db "wallet"
+    create_db "transaction"
+
+    echo "[init] all databases created"

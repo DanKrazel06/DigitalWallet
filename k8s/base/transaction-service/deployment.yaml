@@ -1,0 +1,66 @@
+# =============================================================================
+# Deployment — transaction-service
+#
+# Pourquoi un Deployment (et pas un StatefulSet) ?
+#   - Le service est STATELESS : tout son etat vit dans Postgres/Kafka, pas dans
+#     le pod. Les pods sont interchangeables -> Deployment.
+#   - Un Deployment gere les rolling updates et permet de scaler horizontalement
+#     (replicas: N) — ce que le code supporte (verrous pessimistes + outbox).
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transaction-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: transaction-service
+  template:
+    metadata:
+      labels:
+        app: transaction-service
+    spec:
+      # Laisse le temps au shutdown gracieux (SIGTERM ferme HTTP, consumers
+      # Kafka, outbox relay, Prisma — cf. main.ts) avant le SIGKILL.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: transaction-service
+          image: walletdigital/transaction-service:dev
+          # Image locale chargee dans kind -> ne pas tenter de la tirer.
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 3004
+          # Config injectee : ConfigMap (non sensible) + Secret (DATABASE_URL).
+          envFrom:
+            - configMapRef:
+                name: transaction-service-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: transaction-service-secret
+                  key: DATABASE_URL
+          # Readiness : le pod ne recoit du trafic que si /health repond. Tant
+          # que la DB/Kafka ne sont pas joignables au boot, il reste "not ready".
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Liveness : redemarre le conteneur s'il se fige durablement.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: '1'
+              memory: 512Mi

@@ -1,0 +1,132 @@
+# =============================================================================
+# CI (Continuous Integration) workflow — WalletDigital
+#
+# A GitHub Actions workflow = this YAML file, placed under .github/workflows/.
+# GitHub detects it automatically and runs it according to the triggers below.
+#
+# Purpose of THIS workflow: on every push / pull request, VALIDATE the code
+# (install, lint, typecheck, test). It is the safety net that prevents broken
+# code from being merged. Deployment (CD) will live in a separate workflow.
+# =============================================================================
+
+# "name": the label shown in GitHub's Actions tab.
+name: CI
+
+# -----------------------------------------------------------------------------
+# on: WHEN this workflow runs.
+# -----------------------------------------------------------------------------
+on:
+  # On every push to the main branch.
+  push:
+    branches: [main]
+  # On every pull request targeting main (validates code BEFORE merging).
+  pull_request:
+    branches: [main]
+
+# -----------------------------------------------------------------------------
+# jobs: WHAT to do. Here a single job named "build-and-test".
+# Each job runs on a fresh, isolated virtual machine.
+# -----------------------------------------------------------------------------
+jobs:
+  build-and-test:
+    # The VM provided by GitHub. ubuntu-latest = Linux, the standard choice.
+    runs-on: ubuntu-latest
+
+    # steps: executed in order, top to bottom.
+    steps:
+      # 1) Check out your code into the VM. "uses" = reuse a prebuilt action
+      #    published by the community. actions/checkout is the first step of
+      #    almost every workflow.
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      # 2) Install pnpm (your package manager).
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
+      # 3) Install Node.js, with the pnpm cache enabled to speed up runs.
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # 4) Install monorepo dependencies, strictly from the lockfile.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 5) Generate Prisma clients (required for typecheck/build/tests).
+      - name: Generate Prisma clients
+        run: |
+          pnpm --filter @walletdigital/merchant-service exec prisma generate
+          pnpm --filter @walletdigital/wallet-service exec prisma generate
+          pnpm --filter @walletdigital/transaction-service exec prisma generate
+
+      # 6) Lint: check style / static errors.
+      - name: Lint
+        run: pnpm lint
+
+      # 7) Typecheck: verify TypeScript types across the whole monorepo.
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # 8) Tests: run the test suite (the 29 transaction-service tests).
+      - name: Test
+        run: pnpm test
+
+  # ===========================================================================
+  # JOB 2 — build-and-push-images
+  #
+  # Builds a Docker image per service and pushes it to GHCR (GitHub Container
+  # Registry, ghcr.io). This is the "CD" half: turning validated source code
+  # into deployable artifacts.
+  # ===========================================================================
+  build-and-push-images:
+    # "needs" makes this job wait for build-and-test to SUCCEED first.
+    # No point building images from code that failed its tests.
+    needs: build-and-test
+    runs-on: ubuntu-latest
+
+    # Only push images for real commits on main, not for pull requests.
+    # (A PR from a fork shouldn't be able to publish images.)
+    if: github.event_name == 'push'
+
+    # "permissions" grants this job the right to write packages (push to GHCR).
+    # GitHub auto-provides a token (GITHUB_TOKEN) with exactly these rights —
+    # no manually-created secret needed.
+    permissions:
+      contents: read
+      packages: write
+
+    # "strategy.matrix" runs this job ONCE PER service, in parallel, without
+    # duplicating the steps. ${{ matrix.service }} is substituted each time.
+    strategy:
+      matrix:
+        service: [merchant-service, wallet-service, transaction-service]
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      # Log in to GHCR using the auto-provided token. github.actor = the user
+      # who triggered the run; the token authorizes pushing to their namespace.
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build the runtime image and push it. context: "." (monorepo root)
+      # because services depend on shared workspace packages.
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/${{ matrix.service }}/Dockerfile
+          target: runtime
+          push: true
+          # Image name: ghcr.io/<owner>/<repo>/<service>:latest.
+          tags: ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest

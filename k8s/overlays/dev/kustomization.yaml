@@ -1,0 +1,22 @@
+# =============================================================================
+# Overlay DEV — environnement de developpement local (cluster kind).
+#
+# Pour cet apprentissage, le dev utilise la base telle quelle (1 replica par
+# service, ressources modestes, secrets de dev). L'overlay existe surtout pour
+# montrer le PATRON base/overlay : c'est ici qu'on surchargerait des valeurs
+# specifiques a l'environnement sans toucher a la base.
+#
+# Deploiement de TOUT le systeme :
+#   kubectl apply -k k8s/overlays/dev
+#
+# `commonLabels` ajoute une etiquette a TOUTES les ressources -> pratique pour
+# filtrer (kubectl get all -l env=dev) ou nettoyer un environnement entier.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+labels:
+  - pairs:
+      env: dev
+    includeSelectors: false

@@ -1,0 +1,95 @@
+# =============================================================================
+# StatefulSet — Redpanda (broker compatible Kafka API)
+#
+# Comme Postgres, Redpanda est STATEFUL (il stocke le log des messages sur
+# disque) -> StatefulSet + volume persistant.
+#
+# Difference cle avec le docker-compose : ici tout est INTRA-cluster. On n'a
+# donc PAS besoin du double listener internal/external avec "localhost". Un
+# seul listener suffit, annonce sous le nom DNS du Service : "redpanda:9092".
+# C'est cette adresse que les services mettront dans KAFKA_BROKERS.
+# =============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redpanda
+spec:
+  serviceName: redpanda
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redpanda
+  template:
+    metadata:
+      labels:
+        app: redpanda
+    spec:
+      containers:
+        - name: redpanda
+          image: redpandadata/redpanda:v24.3.1
+          # NOTE : ces flags (--kafka-addr, --advertise-kafka-addr, --mode...)
+          # sont compris par `rpk redpanda start`, PAS par le binaire `redpanda`
+          # brut. C'est rpk qui genere la config puis lance redpanda.
+          command:
+            - rpk
+            - redpanda
+            - start
+            # Un seul listener Kafka, ecoute sur toutes les interfaces.
+            - --kafka-addr
+            - PLAINTEXT://0.0.0.0:9092
+            # Adresse ANNONCEE aux clients : le nom DNS stable du Service.
+            # C'est ce que les consumers/producers utiliseront pour se
+            # reconnecter apres la decouverte initiale du cluster.
+            - --advertise-kafka-addr
+            - PLAINTEXT://redpanda:9092
+            - --rpc-addr
+            - 0.0.0.0:33145
+            - --advertise-rpc-addr
+            - redpanda:33145
+            # Profil mono-broker leger (repris du docker-compose).
+            - --smp
+            - '1'
+            - --memory
+            - 512M
+            - --mode
+            - dev-container
+            - --default-log-level
+            - warn
+          ports:
+            - name: kafka
+              containerPort: 9092
+            - name: rpc
+              containerPort: 33145
+            - name: admin
+              containerPort: 9644
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/redpanda/data
+          # Readiness : le pod n'est joignable que lorsque le cluster Redpanda
+          # se declare "healthy" (rpk interroge l'Admin API locale).
+          readinessProbe:
+            exec:
+              command: ['sh', '-c', "rpk cluster health | grep -E 'Healthy:.+true'"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ['ReadWriteOnce']
+        resources:
+          requests:
+            storage: 1Gi

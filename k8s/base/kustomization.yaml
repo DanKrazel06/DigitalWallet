@@ -1,0 +1,17 @@
+# =============================================================================
+# Kustomization BASE (parent) — agrege tout le systeme WalletDigital.
+#
+# Inclut les 5 composants. Un seul `kubectl apply -k k8s/base` deploie alors
+# l'infrastructure (Postgres, Redpanda) ET les 3 microservices.
+#
+# Les overlays (k8s/overlays/*) referencent cette base et la personnalisent
+# (replicas, ressources...) sans la dupliquer.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - postgres
+  - redpanda
+  - merchant-service
+  - wallet-service
+  - transaction-service

@@ -1,0 +1,13 @@
+# Service (ClusterIP) — merchant-service. DNS interne : merchant-service:3002.
+apiVersion: v1
+kind: Service
+metadata:
+  name: merchant-service
+spec:
+  type: ClusterIP
+  selector:
+    app: merchant-service
+  ports:
+    - name: http
+      port: 3002
+      targetPort: http

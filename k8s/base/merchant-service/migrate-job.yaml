@@ -1,0 +1,25 @@
+# Job — migration Prisma du merchant-service (cf. tx-service pour les details).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: merchant-service-migrate
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: merchant-service
+        role: migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: walletdigital/merchant-service-migrate:dev
+          imagePullPolicy: Never
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: merchant-service-secret
+                  key: DATABASE_URL

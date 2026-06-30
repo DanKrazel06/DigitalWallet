@@ -1,0 +1,30 @@
+# =============================================================================
+# Overlay SCALED — demontre le scaling horizontal.
+#
+# Part de l'overlay dev et passe transaction-service de 1 a 3 replicas via un
+# PATCH (on ne duplique pas le Deployment, on surcharge juste le champ replicas).
+#
+# C'est legitime ici car le code du transaction-service est concurrent-safe :
+#   - verrous pessimistes SELECT ... FOR UPDATE en ordre deterministe
+#   - idempotence a double verification sur les charges/refunds
+#   - outbox draine avec FOR UPDATE SKIP LOCKED
+# Plusieurs replicas peuvent donc traiter des charges en parallele sans corrompre
+# le grand livre. Le Service ClusterIP repartit les requetes entre eux.
+#
+# Deploiement :
+#   kubectl apply -k k8s/overlays/scaled
+# Observation :
+#   kubectl get pods -l app=transaction-service   (-> 3 pods)
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../dev
+patches:
+  - target:
+      kind: Deployment
+      name: transaction-service
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
