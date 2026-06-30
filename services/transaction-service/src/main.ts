@@ -76,7 +76,7 @@ async function bootstrap(): Promise<void> {
   app.setValidatorCompiler(validatorCompiler)
   app.setSerializerCompiler(serializerCompiler)
   app.setErrorHandler(errorHandler)
-  app.get('/health', async () => ({ status: 'ok', service: 'transaction-service' }))
+  app.get('/health', async () => ({ status: 'ok', service: 'transaction-service', version: '0.1.0' }))
   await registerRoutes(app, {
     transactionService,
     ledgerService,
