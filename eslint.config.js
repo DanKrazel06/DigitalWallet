@@ -4,7 +4,15 @@ import prettier from 'eslint-config-prettier'
 
 export default tseslint.config(
   {
-    ignores: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.turbo/**', '**/coverage/**'],
+    ignores: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/build/**',
+      '**/.turbo/**',
+      '**/coverage/**',
+      // Prisma-generated clients: machine-generated CommonJS, must never be linted.
+      '**/generated/**',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
