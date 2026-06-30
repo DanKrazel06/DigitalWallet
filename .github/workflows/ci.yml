@@ -119,6 +119,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Container registries require LOWERCASE repository names, but
+      # github.repository keeps the original casing (e.g. DanKrazel06/DigitalWallet).
+      # We lowercase it here and expose it as a step output for the next step.
+      - name: Compute lowercase image prefix
+        id: img
+        run: echo "prefix=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       # Build the runtime image and push it. context: "." (monorepo root)
       # because services depend on shared workspace packages.
       - name: Build and push ${{ matrix.service }}
@@ -128,5 +135,5 @@ jobs:
           file: services/${{ matrix.service }}/Dockerfile
           target: runtime
           push: true
-          # Image name: ghcr.io/<owner>/<repo>/<service>:latest.
-          tags: ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
+          # Image name: ghcr.io/<owner>/<repo>/<service>:latest (lowercased).
+          tags: ${{ steps.img.outputs.prefix }}/${{ matrix.service }}:latest
